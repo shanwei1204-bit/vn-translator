@@ -69,4 +69,13 @@ if st.session_state.draft_text and not st.session_state.translation_result:
                         model="gpt-4o",
                         messages=[
                             {"role": "system", "content": sys_msg},
-                            {"role": "user", "content": st.session_state.draft
+                            {"role": "user", "content": st.session_state.draft_text}
+                        ],
+                        response_format={"type": "json_object"}
+                    )
+                    
+                    result = json.loads(response.choices[0].message.content)
+                    
+                    # 生成語音
+                    if result["lang"] == "vi":
+                        v_orig, v_trans =
