@@ -2,14 +2,29 @@ import streamlit as st
 from openai import OpenAI
 from streamlit_mic_recorder import mic_recorder
 import base64
+import streamlit.components.v1 as components
 
 # 設定 OpenAI Client
 client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
 
-st.set_page_config(page_title="中越翻譯對照助手", layout="centered")
+st.set_page_config(page_title="中越語音助手", layout="centered")
 
-st.header("🇻🇳 中越雙向翻譯助手 (對照版) 🇨🇳")
-st.write("支援語音、截圖、文字，並保留原文供您比照準確度。")
+# --- 語音朗讀功能的 JavaScript ---
+def speak_text(text, lang):
+    # lang 傳入 'zh-TW' 或 'vi-VN'
+    js_code = f"""
+    <script>
+    function speak() {{
+        var msg = new SpeechSynthesisUtterance('{text.replace("'", "\\'").replace("\\n", " ")}');
+        msg.lang = '{lang}';
+        window.speechSynthesis.speak(msg);
+    }}
+    speak();
+    </script>
+    """
+    components.html(js_code, height=0)
+
+st.header("🇻🇳 中越翻譯對照 + 朗讀 🇨🇳")
 
 # --- 輸入區 ---
 audio = mic_recorder(start_prompt="🎤 錄製語音", stop_prompt="⏹️ 停止", key='recorder')
@@ -19,53 +34,47 @@ user_text = st.text_input("💬 貼上要翻譯的文字：")
 if audio or user_text or uploaded_image:
     with st.spinner("翻譯中..."):
         try:
-            # 建立翻譯指令
             messages = [{
                 "role": "system", 
-                "content": """你是一位專業的中越翻譯顧問。現在是老公(Anh)與老婆(Em)的對話。
-                你的任務是：
-                1. 判斷輸入語言。如果是中文就翻成越文；如果是越文就翻成繁體中文。
-                2. 翻譯語氣要自然、口語化。
-                3. 請務必保留『原文』在最上方，然後在下方提供『翻譯結果』，方便用戶比照準不準。"""
+                "content": "你是一位專業翻譯。請將內容翻譯成對應語言（中翻越、越翻繁中）。請格式化輸出：先寫『原文：』，再換行寫『譯文：』。語氣請口語化。"
             }]
             
             user_content = []
-            
-            # 處理文字
-            if user_text:
-                user_content.append({"type": "text", "text": f"請翻譯這段文字：{user_text}"})
-            
-            # 處理語音 (先轉文字)
+            if user_text: user_content.append({"type": "text", "text": user_text})
             if audio:
-                transcript = client.audio.transcriptions.create(
-                    model="whisper-1", 
-                    file=("temp.wav", audio['bytes']), 
-                    response_format="text"
-                )
-                user_content.append({"type": "text", "text": f"這是語音轉錄的原文：{transcript}。請翻譯它。"})
-            
-            # 處理截圖 (圖片轉文字+翻譯)
+                transcript = client.audio.transcriptions.create(model="whisper-1", file=("temp.wav", audio['bytes']), response_format="text")
+                user_content.append({"type": "text", "text": transcript})
             if uploaded_image:
                 img_b64 = base64.b64encode(uploaded_image.read()).decode('utf-8')
-                user_content.append({
-                    "type": "image_url", 
-                    "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}
-                })
+                user_content.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}})
 
             messages.append({"role": "user", "content": user_content})
+            response = client.chat.completions.create(model="gpt-4o", messages=messages)
+            full_result = response.choices[0].message.content
             
-            # 呼叫 GPT-4o
-            response = client.chat.completions.create(
-                model="gpt-4o", 
-                messages=messages
-            )
-            
-            # --- 顯示結果區 ---
+            # 拆分原文與譯文 (簡單處理)
+            parts = full_result.split("譯文：")
+            original = parts[0].replace("原文：", "").strip()
+            translated = parts[1].strip() if len(parts) > 1 else ""
+
+            # --- 顯示與朗讀區 ---
             st.markdown("---")
-            st.subheader("📊 翻譯結果對照")
-            st.markdown(response.choices[0].message.content)
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.subheader("📄 原文")
+                st.info(original)
+                if st.button("🔊 讀原文"):
+                    # 簡單判斷語言 (越文通常有特殊符號)
+                    lang = 'vi-VN' if any(c in original for c in 'àáảãạăằắẳẵặâầấẩẫậ') else 'zh-TW'
+                    speak_text(original, lang)
+            
+            with col2:
+                st.subheader("🎯 譯文")
+                st.success(translated)
+                if st.button("🔊 讀譯文"):
+                    lang = 'zh-TW' if any(c in original for c in 'àáảãạăằắẳẵặâầấẩẫậ') else 'vi-VN'
+                    speak_text(translated, lang)
             
         except Exception as e:
             st.error(f"發生錯誤：{e}")
-
-st.info("💡 提示：如果您上傳的是老婆的 Line 截圖，AI 會自動辨識上面的越文並翻譯成繁體中文。")
