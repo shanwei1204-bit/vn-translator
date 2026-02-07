@@ -4,154 +4,82 @@ from streamlit_mic_recorder import mic_recorder
 import base64
 import json
 
-# 1. 設定頁面
-st.set_page_config(page_title="中越精準翻譯+語音", layout="wide")
+# --- 1. 基礎設定 ---
+st.set_page_config(page_title="中越精準翻譯 (Google模式)", layout="wide")
 
-# 2. 連接 OpenAI
+# 連接 OpenAI
 try:
     client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
 except:
     st.error("找不到 API Key，請檢查 Secrets 設定。")
     st.stop()
 
-# 3. 初始化 Session State (確保翻譯結果不會消失)
-if "history" not in st.session_state:
-    st.session_state.history = None
-if "processing" not in st.session_state:
-    st.session_state.processing = False
+# --- 2. 初始化記憶體 (確保按鈕按下後內容不消失) ---
+if "draft_text" not in st.session_state:
+    st.session_state.draft_text = ""  # 暫存錄到的文字
+if "last_audio" not in st.session_state:
+    st.session_state.last_audio = None # 判斷是不是新錄音
+if "translation_result" not in st.session_state:
+    st.session_state.translation_result = None # 最終翻譯結果
 
-st.title("🇻🇳 中越翻譯 & 語音朗讀助手 🇹🇼")
+st.title("🇻🇳 中越翻譯助手 (確認模式) 🇹🇼")
 st.markdown("---")
 
-# --- 左側邊欄：輸入區 ---
+# --- 3. 側邊欄：輸入區 ---
 with st.sidebar:
-    st.header("1️⃣ 輸入內容")
+    st.header("1️⃣ 輸入區")
     
-    # 方式 A: 錄音
-    st.subheader("🎤 語音輸入")
-    audio_input = mic_recorder(start_prompt="錄音 (點我)", stop_prompt="停止 (點我)", key='recorder')
+    st.subheader("🎤 語音輸入 (Google 模式)")
+    st.write("點擊錄音 -> 停止 -> 檢查文字 -> 確認翻譯")
+    # 錄音元件
+    audio_input = mic_recorder(start_prompt="🔴 錄音", stop_prompt="⏹️ 停止", key='recorder')
     
-    # 方式 B: 截圖
+    st.markdown("---")
     st.subheader("📷 截圖/照片")
-    image_input = st.file_uploader("上傳 Line 對話截圖", type=["jpg", "jpeg", "png"])
+    image_input = st.file_uploader("上傳 Line 截圖", type=["jpg", "jpeg", "png"])
     
-    # 方式 C: 文字
+    st.markdown("---")
     st.subheader("✍️ 文字輸入")
-    text_input = st.text_area("輸入要翻譯的文字...", height=100)
-
-    # 執行按鈕
-    if st.button("🚀 開始翻譯", type="primary"):
-        st.session_state.processing = True
-
-# --- 主邏輯區 ---
-if st.session_state.processing:
-    with st.spinner("正在分析語意並生成語音..."):
-        try:
-            # 1. 整理輸入內容
-            # 注意：這裡使用了三個引號，請確保複製完整
-            system_prompt = """
-            你是一個專業的中越口譯員。
-            任務：接收使用者的圖片、語音或文字，並進行精準翻譯。
-            
-            【輸出格式要求】：
-            請務必只回傳一個 JSON 格式，不要有其他廢話。格式如下：
-            {
-                "original_text": "這裡放識別到的原文内容",
-                "translated_text": "這裡放翻譯後的繁體中文(或越文)",
-                "source_lang": "vi"
-            }
-            注意：source_lang 如果是越文填 vi, 中文填 zh。
-            """
-
-            messages = [{"role": "system", "content": system_prompt}]
-            
-            user_content = []
-            
-            # 處理文字
-            if text_input:
-                user_content.append({"type": "text", "text": text_input})
-            
-            # 處理語音 (Whisper 轉文字)
-            if audio_input:
-                transcript = client.audio.transcriptions.create(
-                    model="whisper-1", 
-                    file=("temp.wav", audio_input['bytes']), 
-                    response_format="text"
-                )
-                user_content.append({"type": "text", "text": f"語音內容：{transcript}"})
-            
-            # 處理圖片 (GPT-4o 視覺)
-            if image_input:
-                img_b64 = base64.b64encode(image_input.read()).decode('utf-8')
-                user_content.append({
-                    "type": "image_url", 
-                    "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}
-                })
-
-            # 如果沒內容就警告
-            if not user_content:
-                st.warning("請先輸入一點內容 (錄音、貼圖或打字)！")
-                st.session_state.processing = False
-                st.stop()
-
-            messages.append({"role": "user", "content": user_content})
-
-            # 2. 呼叫 GPT-4o 進行翻譯
-            response = client.chat.completions.create(
-                model="gpt-4o", 
-                messages=messages,
-                response_format={"type": "json_object"} 
-            )
-            
-            result_json = response.choices[0].message.content
-            result = json.loads(result_json)
-            
-            # 3. 生成語音 (OpenAI TTS)
-            # 判斷語言來決定語音模型 (越文用 alloy 男聲, 中文用 nova 女聲，或反之)
-            if result.get("source_lang") == "vi":
-                voice_orig = "alloy"
-                voice_trans = "nova"
-            else:
-                voice_orig = "nova"
-                voice_trans = "alloy"
-
-            speech_original = client.audio.speech.create(
-                model="tts-1",
-                voice=voice_orig,
-                input=result["original_text"]
-            )
-            speech_translated = client.audio.speech.create(
-                model="tts-1",
-                voice=voice_trans,
-                input=result["translated_text"]
-            )
-
-            # 4. 存入 Session State
-            st.session_state.history = {
-                "original": result["original_text"],
-                "translated": result["translated_text"],
-                "audio_orig": speech_original.content,
-                "audio_trans": speech_translated.content
-            }
-
-        except Exception as e:
-            st.error(f"發生錯誤：{e}")
-        
-        # 結束處理狀態
-        st.session_state.processing = False
-
-# --- 顯示結果區 (左右對照) ---
-if st.session_state.history:
-    data = st.session_state.history
+    text_input = st.text_area("直接打字...", height=100)
     
-    col1, col2 = st.columns(2)
+    # 手動送出文字按鈕
+    if st.button("送出文字"):
+        if text_input:
+            st.session_state.draft_text = text_input
+            st.session_state.translation_result = None # 清空舊翻譯
+
+# --- 4. 核心邏輯區 ---
+
+# [邏輯 A] 處理剛錄好的聲音 -> 轉成文字 (但不翻譯)
+if audio_input is not None and audio_input != st.session_state.last_audio:
+    with st.spinner("👂 正在辨識語音..."):
+        transcript = client.audio.transcriptions.create(
+            model="whisper-1", 
+            file=("temp.wav", audio_input['bytes']), 
+            response_format="text"
+        )
+        st.session_state.draft_text = transcript # 存入草稿區
+        st.session_state.last_audio = audio_input # 更新錄音狀態
+        st.session_state.translation_result = None # 清空舊翻譯，準備新一輪
+
+# [邏輯 B] 處理圖片 -> 轉成描述 (但不翻譯)
+if image_input:
+    # 圖片比較特殊，通常直接翻譯，但這裡我們為了統一，先存狀態
+    # 這裡簡化處理：如果有圖，直接進入翻譯流程
+    pass 
+
+# --- 5. 主畫面：確認與結果 ---
+
+# 階段一：顯示「我聽到的內容」(讓用戶確認)
+if st.session_state.draft_text and not st.session_state.translation_result:
+    st.info("👂 我聽到/看到了：")
     
-    with col1:
-        st.info("📄 原文內容")
-        st.write(data["original"])
-        st.audio(data["audio_orig"], format="audio/mp3") 
+    # 顯示大字體讓你看得清楚
+    st.markdown(f"### `{st.session_state.draft_text}`")
     
-    with col2:
-        st.success("🎯 翻譯結果")
-        st.write(data["translated"])
-        st.audio(data["audio_trans"], format="audio/mp3")
+    col_confirm, col_clear = st.columns([1, 1])
+    
+    # 確認翻譯按鈕
+    with col_confirm:
+        if st.button("✅ 沒錯，翻譯！", type="primary"):
+            with st.spinner("
